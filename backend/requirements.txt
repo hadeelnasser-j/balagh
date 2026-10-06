@@ -1,0 +1,12 @@
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7,<3
+supabase>=2.6,<3
+openai>=1.75
+httpx>=0.27
+rapidfuzz>=3.9
+numpy>=1.26  # optional, only used by ad-hoc audio checks
+
+# tests
+pytest>=8
