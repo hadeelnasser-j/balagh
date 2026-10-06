@@ -1,0 +1,503 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Download, Loader2, RefreshCw, Save, X } from 'lucide-react';
+import {
+  apiErrorMessage,
+  approveSegment,
+  downloadSrt,
+  editSegment,
+  generateSrt,
+  getRecoveredSources,
+  getJob,
+  getProject,
+  getReviewSummary,
+  getSegments,
+  RecoveredSourceItem,
+  ReviewSegment,
+  ReviewSummary,
+  rejectSegment,
+  startTranslation,
+} from '../services/api';
+import { SegmentSourcePanel } from '../components/review/SegmentSourcePanel';
+
+interface TranscriptionReviewScreenProps {
+  projectId: string;
+  onBack: () => void;
+  onGoToDubbing?: () => void;
+}
+
+const PAGE_SIZE = 50;
+
+function translationSourceBadge(segment: ReviewSegment): { title: string; description: string } | null {
+  const source = (segment.translation_source || '').trim().toLowerCase();
+  const origin = (segment.translation_origin || '').trim().toLowerCase();
+
+  if (source === 'quranenc local' || origin === 'quranenc_local_official') {
+    return {
+      title: 'موسوعة القرآن الكريم QuranEnc',
+      description: 'ترجمة منشورة من القاعدة المحلية',
+    };
+  }
+
+  if (source === 'hadeethenc' || origin === 'hadeethenc_official') {
+    return {
+      title: 'موسوعة الأحاديث النبوية HadeethEnc',
+      description: 'ترجمة منشورة من القاعدة المحلية',
+    };
+  }
+
+  if (origin === 'openai_constrained_draft') {
+    return {
+      title: 'OpenAI',
+      description: 'مسودة آلية مقيدة بالمصدر وتحتاج مراجعة',
+    };
+  }
+
+  if (origin === 'openai_unverified_draft') {
+    return {
+      title: 'OpenAI',
+      description: 'مسودة آلية غير موثقة وتحتاج مراجعة',
+    };
+  }
+
+  if (source === 'openai' || origin === 'openai_general') {
+    return {
+      title: 'OpenAI',
+      description: 'ترجمة آلية للكلام العام',
+    };
+  }
+
+  return null;
+}
+
+function formatTime(seconds: number): string {
+  const totalMilliseconds = Math.round(seconds * 1000);
+  const hours = Math.floor(totalMilliseconds / 3_600_000);
+  const minutes = Math.floor((totalMilliseconds % 3_600_000) / 60_000);
+  const wholeSeconds = Math.floor((totalMilliseconds % 60_000) / 1000);
+  const milliseconds = totalMilliseconds % 1000;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')},${String(milliseconds).padStart(3, '0')}`;
+}
+
+export const TranscriptionReviewScreen: React.FC<TranscriptionReviewScreenProps> = ({
+  projectId,
+  onBack,
+  onGoToDubbing,
+}) => {
+  const [segments, setSegments] = useState<ReviewSegment[]>([]);
+  const [summary, setSummary] = useState<ReviewSummary | null>(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busySegment, setBusySegment] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [hasSrt, setHasSrt] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [reviewVerificationComplete, setReviewVerificationComplete] = useState(false);
+  const [dubbingBlockReasons, setDubbingBlockReasons] = useState<string[]>([]);
+  const [recoveredBySegment, setRecoveredBySegment] = useState<Record<string, RecoveredSourceItem[]>>({});
+
+  const reasonLabel = (reason: string): string => {
+    if (reason.includes('not_approved')) return 'يوجد مقطع لم يُعتمد بعد.';
+    if (reason.includes('translation_missing')) return 'يوجد مقطع بلا ترجمة نهائية.';
+    if (reason.includes('source_not_verified')) return 'يوجد مقطع لم يكتمل فيه التحقق.';
+    if (reason.includes('source_rejected')) return 'يوجد مقطع مرفوض مرجعيًا.';
+    if (reason.includes('translation_not_verified')) return 'يوجد مقطع لم تُوثّق ترجمته بعد.';
+    if (reason.includes('openai_draft_pending_human_review')) return 'توجد ترجمة OpenAI لم تعتمد بشريًا بعد.';
+    return `شرط غير مكتمل: ${reason}`;
+  };
+
+  const computeReviewVerificationComplete = (allSegments: ReviewSegment[]): boolean => (
+    allSegments.length > 0
+    && allSegments.every((segment) => {
+      const finalTranslation = (segment.edited_translation ?? segment.translated_text ?? '').trim();
+      return segment.review_status === 'approved'
+        && segment.translation_verified === true
+        && segment.source_review_status !== 'rejected'
+        && finalTranslation.length > 0;
+    })
+  );
+
+  const loadData = useCallback(async (requestedPage = page) => {
+    setLoading(true);
+    setError('');
+    try {
+      const [segmentPage, reviewSummary, project, recoveredSources] = await Promise.all([
+        getSegments(projectId, requestedPage, PAGE_SIZE),
+        getReviewSummary(projectId),
+        getProject(projectId),
+        getRecoveredSources(projectId),
+      ]);
+      const allSegments = await getSegments(projectId, 1, Math.max(segmentPage.total, PAGE_SIZE));
+      setSegments(segmentPage.items);
+      setTotal(segmentPage.total);
+      setSummary(reviewSummary);
+      setHasSrt(Boolean(project.srt_storage_path));
+      setReviewVerificationComplete(computeReviewVerificationComplete(allSegments.items));
+      const recoveredIndex = recoveredSources.reduce<Record<string, RecoveredSourceItem[]>>((accumulator, item) => {
+        const key = item.segment_id ?? '';
+        if (!key) return accumulator;
+        const current = accumulator[key] ?? [];
+        current.push(item);
+        accumulator[key] = current;
+        return accumulator;
+      }, {});
+      setRecoveredBySegment(recoveredIndex);
+      const localReasons = allSegments.items.flatMap((segment) => {
+        const finalTranslation = (segment.edited_translation ?? segment.translated_text ?? '').trim();
+        const reasons: string[] = [];
+        if (segment.translation_status !== 'translated') reasons.push('translation_missing');
+        if (segment.review_status !== 'approved') reasons.push('not_approved');
+        if (segment.translation_verified !== true) reasons.push('translation_not_verified');
+        if (segment.ready_for_dubbing !== true) reasons.push('source_not_verified');
+        if (segment.source_review_status === 'rejected') reasons.push('source_rejected');
+        if (!finalTranslation) reasons.push('translation_missing');
+        return reasons;
+      });
+      setDubbingBlockReasons(localReasons.map(reasonLabel));
+      setDrafts(Object.fromEntries(segmentPage.items.map((segment) => [
+        segment.id,
+        segment.edited_translation ?? segment.translated_text ?? '',
+      ])));
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }, [page, projectId]);
+
+  useEffect(() => {
+    void loadData(page);
+  }, [loadData, page]);
+
+  const updateSegment = (updated: ReviewSegment) => {
+    setSegments((current) => current.map((segment) => segment.id === updated.id ? updated : segment));
+    setDrafts((current) => ({
+      ...current,
+      [updated.id]: updated.edited_translation ?? updated.translated_text ?? '',
+    }));
+    void getReviewSummary(projectId)
+      .then(setSummary)
+      .catch((requestError: unknown) => setError(apiErrorMessage(requestError)));
+  };
+
+  const handleSave = async (segmentId: string) => {
+    setBusySegment(segmentId);
+    setError('');
+    try {
+      const updated = await editSegment(segmentId, drafts[segmentId] ?? '');
+      updateSegment(updated);
+      setNotice('تم حفظ التعديل.');
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError));
+    } finally {
+      setBusySegment(null);
+    }
+  };
+
+  const handleReviewAction = async (segmentId: string, action: 'approve' | 'reject') => {
+    setBusySegment(segmentId);
+    setError('');
+    try {
+      const updated = action === 'approve'
+        ? await approveSegment(segmentId)
+        : await rejectSegment(segmentId);
+      updateSegment(updated);
+      setNotice(action === 'approve' ? 'تم اعتماد الترجمة.' : 'تم رفض الترجمة.');
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError));
+    } finally {
+      setBusySegment(null);
+    }
+  };
+
+  const handleGenerateSrt = async (mode: 'draft' | 'final' = 'draft') => {
+    setIsGenerating(true);
+    setError('');
+    try {
+      await generateSrt(projectId, mode);
+      setHasSrt(true);
+      setNotice(mode === 'final' ? 'تم إنشاء ملف SRT النهائي بنجاح.' : 'تم إنشاء ملف SRT المسودة بنجاح.');
+      await loadData(page);
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError));
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    setError('');
+    try {
+      const file = await downloadSrt(projectId);
+      const url = URL.createObjectURL(file);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${projectId}.srt`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError));
+    }
+  };
+
+  const handleRetryTranslations = async () => {
+    setIsRetrying(true);
+    setError('');
+    try {
+      const started = await startTranslation(projectId);
+      setNotice('جارٍ إعادة ترجمة المقاطع المتعثرة...');
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        const job = await getJob(started.job_id);
+        if (job.status === 'failed') {
+          throw new Error(job.error_message || 'فشلت إعادة ترجمة المقاطع.');
+        }
+        if (job.status === 'awaiting_review' || job.status === 'srt_generated') break;
+      }
+      setNotice('اكتملت إعادة الترجمة.');
+      await loadData(page);
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError));
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const canGoToDubbing = reviewVerificationComplete && dubbingBlockReasons.length === 0;
+
+  return (
+    <div className="min-h-[calc(100vh-180px)]">
+      <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6" dir="rtl">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <button type="button" onClick={onBack} className="mb-3 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-brand-800">
+              <ArrowLeft className="h-4 w-4" /> العودة للمشروع
+            </button>
+            <h1 className="text-2xl font-bold text-slate-900">مراجعة النص والترجمة</h1>
+            <p className="mt-1 break-all text-xs text-slate-400" dir="ltr">{projectId}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {summary?.failed_segments ? (
+              <button
+                type="button"
+                onClick={() => void handleRetryTranslations()}
+                disabled={isRetrying}
+                className="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-white px-4 py-2.5 text-sm font-semibold text-amber-800 disabled:opacity-60"
+              >
+                {isRetrying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                إعادة ترجمة الفاشل
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void handleGenerateSrt()}
+              disabled={isGenerating || !summary?.total_segments}
+              className="inline-flex items-center gap-2 rounded-xl bg-brand-800 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+            >
+              {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              إنشاء SRT مسودة
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleGenerateSrt('final')}
+              disabled={isGenerating || !summary?.total_segments}
+              className="inline-flex items-center gap-2 rounded-xl border border-brand-800 bg-white px-4 py-2.5 text-sm font-bold text-brand-800 disabled:opacity-50"
+            >
+              إنشاء SRT نهائي
+            </button>
+            {hasSrt && (              <button type="button" onClick={() => void handleDownload()} className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-bold text-emerald-800">
+                <Download className="h-4 w-4" /> تنزيل SRT
+              </button>
+            )}
+          </div>
+        </div>
+
+        {summary && (
+          <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-subtle">
+            <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3 xl:grid-cols-6">
+              <SummaryCount label="إجمالي المقاطع" count={summary.total_segments} />
+              <SummaryCount label="مترجم" count={summary.translated_segments} />
+              <SummaryCount label="فشل" count={summary.failed_segments} />
+              <SummaryCount label="بانتظار المراجعة" count={summary.pending_review} />
+              <SummaryCount label="معدّل" count={summary.edited_segments} />
+              <SummaryCount label="معتمد" count={summary.approved_segments} />
+            </div>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
+              <div className="h-full rounded-full bg-emerald-600 transition-all" style={{
+                width: `${summary.total_segments ? (summary.approved_segments / summary.total_segments) * 100 : 0}%`,
+              }} />
+            </div>
+            <p className="mt-2 text-xs text-slate-500">تقدم المراجعة البشرية</p>
+          </section>
+        )}
+
+        {error && <p role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</p>}
+        {notice && <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">{notice}</p>}
+        {!canGoToDubbing && onGoToDubbing && dubbingBlockReasons.length > 0 && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">لا يمكن الانتقال إلى الدبلجة قبل استكمال الشروط:</p>
+            <ul className="mt-2 list-disc pr-5">
+              {Array.from(new Set(dubbingBlockReasons)).map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="flex justify-center rounded-2xl bg-white p-12"><Loader2 className="h-7 w-7 animate-spin text-brand-700" /></div>
+        ) : segments.length === 0 ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center">
+            <h2 className="font-bold text-slate-800">لا توجد مقاطع للمراجعة</h2>
+            <p className="mt-2 text-sm text-slate-500">ابدأ التفريغ والترجمة من شاشة معالجة المشروع.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {segments.map((segment) => {
+              const translationBadge = translationSourceBadge(segment);
+              return (
+              <article key={segment.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-subtle">
+                <header className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <h2 className="font-bold text-slate-800">المقطع {segment.segment_index + 1}</h2>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded-lg bg-slate-100 px-2 py-1 font-mono" dir="ltr">
+                      {formatTime(segment.start_time)} — {formatTime(segment.end_time)}
+                    </span>
+                    <StatusBadge value={segment.translation_status} />
+                    <StatusBadge value={segment.review_status} />
+                  </div>
+                </header>
+
+                {segment.translation_status === 'failed' && (
+                  <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">
+                    تعذرت ترجمة هذا المقطع. يمكنك إعادة المحاولة أو إدخال الترجمة يدويًا.
+                  </p>
+                )}
+                {segment.translation_warning && (
+                  <p className="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                    يتطلب هذا المقطع مراجعة بشرية: {segment.translation_warning}
+                  </p>
+                )}
+                {segment.translation_error && <p className="mb-3 text-xs text-rose-700">{segment.translation_error}</p>}
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold text-slate-500">النص الأصلي</label>
+                    <p className="min-h-24 rounded-xl bg-slate-50 p-3 text-sm leading-7 text-slate-800" dir={segment.source_language === 'ar' ? 'rtl' : 'ltr'}>
+                      {segment.original_text}
+                    </p>
+                  </div>
+                  <div>
+                    <label htmlFor={`translation-${segment.id}`} className="mb-2 block text-xs font-semibold text-slate-500">الترجمة</label>
+                    <textarea
+                      id={`translation-${segment.id}`}
+                      value={drafts[segment.id] ?? ''}
+                      onChange={(event) => setDrafts((current) => ({ ...current, [segment.id]: event.target.value }))}
+                      rows={4}
+                      maxLength={10000}
+                      dir="ltr"
+                      className="w-full rounded-xl border border-slate-200 bg-white p-3 text-left text-sm leading-7 text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+                    />
+                    {translationBadge && (
+                      <div className="mt-2 inline-flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                        <span className="font-semibold text-slate-700">{translationBadge.title}</span>
+                        <span className="text-slate-400">•</span>
+                        <span>{translationBadge.description}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <SegmentSourcePanel
+                  segment={segment}
+                  recoveredSources={recoveredBySegment[segment.id] ?? []}
+                />
+
+                <footer className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+                  <button
+                    type="button"
+                    disabled={busySegment === segment.id}
+                    onClick={() => void handleSave(segment.id)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50"
+                  >
+                    {busySegment === segment.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    حفظ التعديل
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busySegment === segment.id}
+                    onClick={() => void handleReviewAction(segment.id, 'reject')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 px-3 py-2 text-sm font-semibold text-rose-700 disabled:opacity-50"
+                  >
+                    <X className="h-4 w-4" /> رفض
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busySegment === segment.id || !(drafts[segment.id] ?? '').trim()}
+                    onClick={() => void handleReviewAction(segment.id, 'approve')}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  >
+                    <Check className="h-4 w-4" /> اعتماد
+                  </button>
+                </footer>
+              </article>
+              );
+            })}
+          </div>
+        )}
+
+        {pageCount > 1 && (
+          <nav className="mt-6 flex items-center justify-center gap-4" aria-label="صفحات المقاطع">
+            <button type="button" disabled={page <= 1 || loading} onClick={() => setPage((value) => value - 1)} className="rounded-lg border bg-white p-2 disabled:opacity-40">
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <span className="text-sm text-slate-600">صفحة {page} من {pageCount}</span>
+            <button type="button" disabled={page >= pageCount || loading} onClick={() => setPage((value) => value + 1)} className="rounded-lg border bg-white p-2 disabled:opacity-40">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+          </nav>
+        )}
+        {onGoToDubbing && (
+          <div className="mt-6 flex flex-col items-start gap-2">
+            <button
+              type="button"
+              onClick={onGoToDubbing}
+              disabled={!canGoToDubbing}
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              التالي: الانتقال إلى الدبلجة
+            </button>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+const SummaryCount: React.FC<{ label: string; count: number }> = ({ label, count }) => (
+  <div className="rounded-xl bg-slate-50 p-3">
+    <p className="text-xs text-slate-500">{label}</p>
+    <p className="mt-1 text-xl font-bold text-slate-900">{count}</p>
+  </div>
+);
+
+const StatusBadge: React.FC<{ value: string }> = ({ value }) => {
+  const labels: Record<string, string> = {
+    pending: 'بانتظار الإجراء',
+    translating: 'قيد الترجمة',
+    translated: 'مترجم',
+    failed: 'فشل',
+    edited: 'معدّل',
+    approved: 'معتمد',
+    rejected: 'مرفوض',
+  };
+  const classes = value === 'failed' || value === 'rejected'
+    ? 'bg-rose-50 text-rose-700'
+    : value === 'approved' || value === 'translated'
+      ? 'bg-emerald-50 text-emerald-700'
+      : 'bg-amber-50 text-amber-800';
+  return <span className={`rounded-full px-2.5 py-1 font-semibold ${classes}`}>{labels[value] || value}</span>;
+};

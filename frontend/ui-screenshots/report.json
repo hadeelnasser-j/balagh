@@ -1,0 +1,14 @@
+[
+  {
+    "url": "http://localhost:5173/",
+    "title": "BALAGH | بلاغ — نُبلّغ",
+    "status": 200,
+    "screenshot": "01-home.png"
+  },
+  {
+    "url": "http://localhost:5173/projects",
+    "title": "BALAGH | بلاغ — نُبلّغ",
+    "status": 200,
+    "screenshot": "02-projects.png"
+  }
+]

@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: 'IBM Plex Sans Arabic', 'Tajawal', 'Cairo', system-ui, -apple-system, sans-serif;
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: #060B1E;
+    color: #F1F5F9;
+  }
+}
+
+/* Islamic Star Geometric Pattern Watermark Overlay */
+.bg-islamic-pattern {
+  background-image: url("data:image/svg+xml,%3Csvg width='80' height='80' viewBox='0 0 80 80' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' stroke='%2300F2FE' stroke-width='0.4' stroke-opacity='0.07'%3E%3Cpath d='M40 0 L52 12 L40 24 L28 12 Z'/%3E%3Cpath d='M40 24 L52 36 L40 48 L28 36 Z'/%3E%3Cpath d='M40 48 L52 60 L40 72 L28 60 Z'/%3E%3Cpath d='M0 40 L12 52 L24 40 L12 28 Z'/%3E%3Cpath d='M24 40 L36 52 L48 40 L36 28 Z'/%3E%3Cpath d='M48 40 L60 52 L72 40 L60 28 Z'/%3E%3Cpath d='M40 0 L68 28 L40 56 L12 28 Z'/%3E%3Cpath d='M40 24 L68 52 L40 80 L12 52 Z'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* AI Challenge Ambient Background Glows */
+.ai-ambient-bg {
+  position: relative;
+  background-color: #060B1E;
+  overflow-x: hidden;
+}
+
+.ai-ambient-bg::before {
+  content: '';
+  position: absolute;
+  top: -10%;
+  right: -5%;
+  width: 50vw;
+  height: 50vw;
+  max-width: 600px;
+  max-height: 600px;
+  background: radial-gradient(circle, rgba(121, 40, 202, 0.22) 0%, rgba(6, 11, 30, 0) 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.ai-ambient-bg::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: -5%;
+  width: 55vw;
+  height: 55vw;
+  max-width: 700px;
+  max-height: 700px;
+  background: radial-gradient(circle, rgba(0, 245, 212, 0.15) 0%, rgba(0, 242, 254, 0.08) 35%, rgba(6, 11, 30, 0) 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Glassmorphism Card Style */
+.glass-card {
+  background: rgba(11, 20, 55, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(0, 245, 212, 0.18);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+}
+
+.glass-card-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card-hover:hover {
+  border-color: rgba(0, 245, 212, 0.45);
+  box-shadow: 0 12px 40px -10px rgba(0, 245, 212, 0.25);
+  transform: translateY(-2px);
+}
+
+/* Glow gradient text */
+.text-gradient-cyan {
+  background: linear-gradient(135deg, #00F5D4 0%, #00F2FE 50%, #3B82F6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #060B1E;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #111C44;
+  border: 1px solid rgba(0, 245, 212, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #00F5D4;
+}
+
+/* Completion page: smooth staggered fade-in (delays set inline per element) */
+@keyframes balagh-fade-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.balagh-fade-in {
+  animation: balagh-fade-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .balagh-fade-in { animation: none; }
+}
